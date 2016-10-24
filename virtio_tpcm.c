@@ -16,19 +16,28 @@ MODULE_LICENSE("GPL");
     struct ethhdr * ethdr = NULL;
     u_char * pdata = NULL;
 
-    printk("using tpcm");
+    printk("in dev_xmit_tpcm\n");
 
-    dev = dev_get_by_name (&init_net, eth);
+    dev = dev_get_by_name(&init_net, eth);
 
-    skb = alloc_skb (pkt_len + 14 , GFP_ATOMIC);
+    skb = alloc_skb (pkt_len + LL_RESERVED_SPACE(dev) , GFP_ATOMIC);
     if (NULL == skb) goto out;
+    printk("alloc_skb success\n");
 
-    skb_reserve (skb, 14);
+    skb_reserve(skb, LL_RESERVED_SPACE(dev));
     skb->dev = dev;
     skb->pkt_type = PACKET_KERNEL;
 
-    pdata = skb_put (skb, pkt_len);
-    if (NULL != pkt) memcpy (pdata, pkt, pkt_len);
+    if(pkt == NULL) {
+        printk("pkt pointer is null\n");
+        goto out;
+    }
+
+    pdata = skb_put(skb, pkt_len);
+    printk("%p\n", pdata);
+    printk("before memcpy pkt\n");
+    if (NULL != pkt) memcpy(pdata, pkt, pkt_len);
+    printk("after memcpy pkt\n");
 
     /*
      * Add fake ethernet header
@@ -37,17 +46,24 @@ MODULE_LICENSE("GPL");
      * BEEF
      *
      * */
-    skb->mac_header = skb_push (skb, 14);
-    ethdr = (struct ethhdr *) skb->mac_header;
-    memcpy (ethdr->h_dest, "94de80faa236", ETH_ALEN);
-    memcpy (ethdr->h_source, "123456abcdee", ETH_ALEN);
-    ethdr->h_proto = 0xBEEF;
+    //skb->mac_header = skb_push(skb, 14);
+    printk("%p\n",skb_push(skb, 14));
+    ethdr = (struct ethhdr *) skb_push(skb, 14);
+    unsigned char dest[] = "\x94\xde\x80\xfa\xa2\x36";
+    memcpy(ethdr->h_dest, dest, ETH_ALEN);
+    printk("%p\n", ethdr->h_dest);
+    unsigned char src[] = "\x12\x34\x56\xab\xcd\xee";
+    memcpy(ethdr->h_source, dev->dev_addr, ETH_ALEN);
+    printk("%p\n", ethdr->h_source);
+    ethdr->h_proto = __constant_htons(0xBEEF);
 
+    printk("before xmit\n");
     if (0 > dev_queue_xmit(skb)) goto out;
+    printk("after xmit\n");
     nret = 0;
 
 out:
-    if (0 != nret && NULL != skb) {dev_put (dev); kfree_skb (skb);}
+    if (0 != nret && NULL != skb) {dev_put(dev); kfree_skb(skb);}
     printk("something error");
 
     return 0;
