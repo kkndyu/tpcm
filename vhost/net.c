@@ -426,7 +426,7 @@ static void handle_tx(struct vhost_net *net)
 			break;
 		}
         /* print test pkt content */
-        printk("0x%p===%d===%d\n",vq->iov->iov_base, iov_length(vq->iov, out), out);
+        printk("0x%p===%d===%d===%d\n",vq->iov->iov_base, iov_length(vq->iov, out), out, vq->iov->iov_len);
         HexDump(vq->iov->iov_base, 100, (int)(vq->iov->iov_base));
         if(out==2){
             HexDump((vq->iov[1]).iov_base, 100, (int)((vq->iov[1]).iov_base));

@@ -10,7 +10,7 @@ static int __init init(void)
 {
     printk(KERN_ALERT "virtio_tpcm test send\n");
 
-    dev_xmit_tpcm("eth0", pkt, 17);
+    dev_xmit_tpcm("eth0", pkt, 16);
 
     return 0;
 }

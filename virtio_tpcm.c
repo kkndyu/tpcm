@@ -20,11 +20,13 @@ MODULE_LICENSE("GPL");
 
     dev = dev_get_by_name(&init_net, eth);
 
-    skb = alloc_skb (pkt_len + LL_RESERVED_SPACE(dev) , GFP_ATOMIC);
+    //skb = alloc_skb (pkt_len + LL_RESERVED_SPACE(dev) , GFP_ATOMIC);
+    skb = alloc_skb (pkt_len + 12 + 14 , GFP_ATOMIC);
     if (NULL == skb) goto out;
     printk("alloc_skb success\n");
 
-    skb_reserve(skb, LL_RESERVED_SPACE(dev));
+    //skb_reserve(skb, LL_RESERVED_SPACE(dev));
+    skb_reserve(skb, 12+14);
     skb->dev = dev;
     skb->pkt_type = PACKET_OTHERHOST;
 
@@ -47,7 +49,7 @@ MODULE_LICENSE("GPL");
      *
      * */
     //skb->mac_header = skb_push(skb, 14);
-    printk("%p\n",skb_push(skb, 14));
+    //printk("%p\n",skb_push(skb, 14));
     ethdr = (struct ethhdr *) skb_push(skb, 14);
     unsigned char dest[] = "\x94\xde\x80\xfa\xa2\x36";
     memcpy(ethdr->h_dest, dest, ETH_ALEN);
