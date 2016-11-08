@@ -8,7 +8,7 @@ MODULE_LICENSE("GPL");
  * will be used.
  *
  * */
- int dev_xmit_tpcm(char * eth, u_char* pkt, int pkt_len)
+int dev_xmit_tpcm(char * eth, u_char* pkt, int pkt_len)
 {
     struct net_device * dev = NULL;
     struct sk_buff * skb = NULL;
@@ -66,7 +66,9 @@ MODULE_LICENSE("GPL");
     nret = 0;
 
 out:
-    if (0 != nret && NULL != skb) {dev_put(dev); kfree_skb(skb);}
+    //if (0 != nret && NULL != skb) {dev_put(dev); kfree_skb(skb);}
+    if (0 != nret && NULL != skb) { kfree_skb(skb); }
+    dev_put(dev);
     printk("something error");
 
     return 0;
@@ -86,3 +88,4 @@ static void __exit fini(void)
 module_init(init);
 module_exit(fini);
 EXPORT_SYMBOL_GPL(dev_xmit_tpcm);
+EXPORT_SYMBOL_GPL(dev_xmit_tpcm_host);
