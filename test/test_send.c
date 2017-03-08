@@ -4,13 +4,16 @@ MODULE_LICENSE("GPL");
 
 extern int dev_xmit_tpcm(char * eth, u_char* pkt, int pkt_len);
 
-static u_char* pkt = "hello virtio_tcp";
+static u_char pkt[] = 
+    "\x00\x00\x10\x00"
+    "hello virtio_tcp";
+
 
 static int __init init(void)
 {
     printk(KERN_ALERT "virtio_tpcm test send\n");
 
-    dev_xmit_tpcm("eth0", pkt, 16);
+    dev_xmit_tpcm("eth0", pkt, 20);
 
     return 0;
 }

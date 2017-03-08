@@ -55,7 +55,7 @@ int dev_xmit_tpcm(char * eth, u_char* pkt, int pkt_len)
     memcpy(ethdr->h_dest, dest, ETH_ALEN);
     printk("%p\n", ethdr->h_dest);
     unsigned char src[] = "\x12\x34\x56\xab\xcd\xee";
-    memcpy(ethdr->h_source, src, ETH_ALEN);
+    memcpy(ethdr->h_source, dev->dev_addr, ETH_ALEN);
     //memcpy(ethdr->h_source, dev->dev_addr, ETH_ALEN);
     printk("%p\n", ethdr->h_source);
     ethdr->h_proto = __constant_htons(0xBEEF);

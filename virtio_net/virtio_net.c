@@ -475,6 +475,9 @@ static void receive_buf(struct receive_queue *rq, void *buf, unsigned int len)
 	struct virtnet_stats *stats = this_cpu_ptr(vi->stats);
 	struct sk_buff *skb;
 	struct skb_vnet_hdr *hdr;
+    
+    printk("skb->len = %d\n",len);
+    HexDump(buf, 100, (int)(buf));
 
 	if (unlikely(len < sizeof(struct virtio_net_hdr) + ETH_HLEN)) {
 		pr_debug("%s: short packet %i\n", dev->name, len);

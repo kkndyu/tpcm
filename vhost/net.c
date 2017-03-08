@@ -27,7 +27,6 @@
 #include <linux/if_vlan.h>
 
 #include <net/sock.h>
-
 #include "vhost.h"
 
 static int experimental_zcopytx = 1;
@@ -42,7 +41,25 @@ MODULE_PARM_DESC(experimental_zcopytx, "Enable Zero Copy TX;"
 /* MAX number of TX used buffers for outstanding zerocopy */
 #define VHOST_MAX_PEND 128
 #define VHOST_GOODCOPY_LEN 256
+/*--------------------------fgz add--------------*/
+struct macvtap_queue {
+    struct sock sk;
+    struct socket sock;
+    struct socket_wq wq;
+    int vnet_hdr_sz;
+    struct macvlan_dev __rcu *vlan;
+    struct file *file;
+    unsigned int flags;
+    u16 queue_index;
+    bool enabled;
+    struct list_head next;
+};
 
+#define VIRTIO_HEAD_LEN 12
+#define ENCRYPT_PROTOCOL 0xBEEF
+int vtcm_command_respond(char* pkt, unsigned int pkt_len,struct net_device *dev,unsigned char* vm_mac);
+
+/*---------------------------------------------------------------------------------------------*/
 /*
  * For transmit, used buffer len is unused; we override it to track buffer
  * status internally; used for zerocopy tx only.
@@ -362,158 +379,6 @@ void HexDump(char *buf,int len,int addr) {
     }
 }
 
-static void handle_tx(struct vhost_net *net)
-{
-	struct vhost_net_virtqueue *nvq = &net->vqs[VHOST_NET_VQ_TX];
-	struct vhost_virtqueue *vq = &nvq->vq;
-	unsigned out, in, s;
-	int head;
-	struct msghdr msg = {
-		.msg_name = NULL,
-		.msg_namelen = 0,
-		.msg_control = NULL,
-		.msg_controllen = 0,
-		.msg_iov = vq->iov,
-		.msg_flags = MSG_DONTWAIT,
-	};
-	size_t len, total_len = 0;
-	int err;
-	size_t hdr_size;
-	struct socket *sock;
-	struct vhost_net_ubuf_ref *uninitialized_var(ubufs);
-	bool zcopy, zcopy_used;
-
-	mutex_lock(&vq->mutex);
-	sock = vq->private_data;
-	if (!sock)
-		goto out;
-
-	vhost_disable_notify(&net->dev, vq);
-
-	hdr_size = nvq->vhost_hlen;
-	zcopy = nvq->ubufs;
-
-	for (;;) {
-		/* Release DMAs done buffers first */
-		if (zcopy)
-			vhost_zerocopy_signal_used(net, vq);
-
-		/* If more outstanding DMAs, queue the work.
-		 * Handle upend_idx wrap around
-		 */
-		if (unlikely((nvq->upend_idx + vq->num - VHOST_MAX_PEND)
-			      % UIO_MAXIOV == nvq->done_idx))
-			break;
-
-		head = vhost_get_vq_desc(vq, vq->iov,
-					 ARRAY_SIZE(vq->iov),
-					 &out, &in,
-					 NULL, NULL);
-		/* On error, stop handling until the next kick. */
-		if (unlikely(head < 0))
-			break;
-		/* Nothing new?  Wait for eventfd to tell us they refilled. */
-		if (head == vq->num) {
-			if (unlikely(vhost_enable_notify(&net->dev, vq))) {
-				vhost_disable_notify(&net->dev, vq);
-				continue;
-			}
-			break;
-		}
-		if (in) {
-			vq_err(vq, "Unexpected descriptor format for TX: "
-			       "out %d, int %d\n", out, in);
-			break;
-		}
-        /* print test pkt content */
-        printk("0x%p===%d===%d===%d\n",vq->iov->iov_base, iov_length(vq->iov, out), out, vq->iov->iov_len);
-        HexDump(vq->iov->iov_base, 100, (int)(vq->iov->iov_base));
-        if(out==2){
-            HexDump((vq->iov[1]).iov_base, 100, (int)((vq->iov[1]).iov_base));
-        }
-		/* Skip header. TODO: support TSO. */
-		s = move_iovec_hdr(vq->iov, nvq->hdr, hdr_size, out);
-		msg.msg_iovlen = out;
-		len = iov_length(vq->iov, out);
-		/* Sanity check */
-		if (!len) {
-			vq_err(vq, "Unexpected header len for TX: "
-			       "%zd expected %zd\n",
-			       iov_length(nvq->hdr, s), hdr_size);
-			break;
-		}
-
-		zcopy_used = zcopy && len >= VHOST_GOODCOPY_LEN
-				   && (nvq->upend_idx + 1) % UIO_MAXIOV !=
-				      nvq->done_idx
-				   && vhost_net_tx_select_zcopy(net);
-
-		/* use msg_control to pass vhost zerocopy ubuf info to skb */
-		if (zcopy_used) {
-			struct ubuf_info *ubuf;
-			ubuf = nvq->ubuf_info + nvq->upend_idx;
-
-			vq->heads[nvq->upend_idx].id = head;
-			vq->heads[nvq->upend_idx].len = VHOST_DMA_IN_PROGRESS;
-			ubuf->callback = vhost_zerocopy_callback;
-			ubuf->ctx = nvq->ubufs;
-			ubuf->desc = nvq->upend_idx;
-			msg.msg_control = ubuf;
-			msg.msg_controllen = sizeof(ubuf);
-			ubufs = nvq->ubufs;
-			atomic_inc(&ubufs->refcount);
-			nvq->upend_idx = (nvq->upend_idx + 1) % UIO_MAXIOV;
-		} else {
-			msg.msg_control = NULL;
-			ubufs = NULL;
-		}
-		/* TODO: Check specific error and bomb out unless ENOBUFS? */
-		err = sock->ops->sendmsg(NULL, sock, &msg, len);
-		if (unlikely(err < 0)) {
-			if (zcopy_used) {
-				vhost_net_ubuf_put(ubufs);
-				nvq->upend_idx = ((unsigned)nvq->upend_idx - 1)
-					% UIO_MAXIOV;
-			}
-			vhost_discard_vq_desc(vq, 1);
-			break;
-		}
-		if (err != len)
-			pr_debug("Truncated TX packet: "
-				 " len %d != %zd\n", err, len);
-		if (!zcopy_used)
-			vhost_add_used_and_signal(&net->dev, vq, head, 0);
-		else
-			vhost_zerocopy_signal_used(net, vq);
-		total_len += len;
-		vhost_net_tx_packet(net);
-		if (unlikely(total_len >= VHOST_NET_WEIGHT)) {
-			vhost_poll_queue(&vq->poll);
-			break;
-		}
-	}
-out:
-	mutex_unlock(&vq->mutex);
-}
-
-static int peek_head_len(struct sock *sk)
-{
-	struct sk_buff *head;
-	int len = 0;
-	unsigned long flags;
-
-	spin_lock_irqsave(&sk->sk_receive_queue.lock, flags);
-	head = skb_peek(&sk->sk_receive_queue);
-	if (likely(head)) {
-		len = head->len;
-		if (vlan_tx_tag_present(head))
-			len += VLAN_HLEN;
-	}
-
-	spin_unlock_irqrestore(&sk->sk_receive_queue.lock, flags);
-	return len;
-}
-
 /* This is a multi-buffer version of vhost_get_desc, that works if
  *	vq has read descriptors only.
  * @vq		- the relevant virtqueue
@@ -585,6 +450,451 @@ err:
 	vhost_discard_vq_desc(vq, headcount);
 	return r;
 }
+
+
+/*---------------fgz add----------------------------------------------------------*/
+static u_char pkt_test[] ="\x00\x00\x10\x02 hello virtio_tcp";   
+static unsigned char src_test[] = "\x22\x33\x66\xab\xcd\xee";
+int dev_xmit_tpcm_host_1(struct net_device * dev, u_char* pkt, int pkt_len,unsigned char *dest)
+{
+struct sk_buff * skb = NULL; 
+struct ethhdr * ethdr = NULL; 
+u_char * pdata = NULL;
+int nret = 1; 
+
+printk("in dev_xmit_tpcm\n");
+//dev = dev_get_by_name(&init_net, eth);
+skb = alloc_skb (pkt_len + 12 + 14 , GFP_ATOMIC);
+if (NULL == skb) goto out;
+printk("alloc_skb success\n");
+skb_reserve(skb, 12+14); 
+skb->dev = dev;
+skb->pkt_type = PACKET_OTHERHOST;
+
+if(pkt == NULL)
+{
+printk("pkt pointer is null\n");  
+ goto out;   
+
+}
+
+ pdata = skb_put(skb, pkt_len); 
+ printk("before memcpy pkt\n");
+ if (NULL != pkt) memcpy(pdata, pkt, pkt_len);
+ printk("after memcpy pkt\n");
+ ethdr = (struct ethhdr *) skb_push(skb, 14); 
+ //unsigned char dest[] = "\x52\x54\x00\xc0\x26\x6c";
+ memcpy(ethdr->h_dest, dest, ETH_ALEN);  
+ //unsigned char src[] = "\x12\x34\x56\xab\xcd\xee";
+ memcpy(ethdr->h_source, src_test, ETH_ALEN); 
+ ethdr->h_proto = __constant_htons(0xBEEF);
+ printk("before xmit\n");
+ if (0 > dev_queue_xmit(skb)) goto out;
+ printk("after xmit\n");
+nret = 0;
+out:
+if (0 != nret && NULL != skb) { kfree_skb(skb);}
+//dev_put(dev); 
+
+return nret;
+
+}
+static void handle_tpcm_rx(struct vhost_net *net, struct sk_buff * skb)
+{
+    struct vhost_net_virtqueue *nvq = &net->vqs[VHOST_NET_VQ_RX];
+    struct vhost_virtqueue *vq = &nvq->vq;
+    //struct iov_iter skb_iter;
+    unsigned uninitialized_var(in), log;
+    s16 headcount;
+    struct virtio_net_hdr hdr = {
+        .flags = 0,
+        .gso_type = VIRTIO_NET_HDR_GSO_NONE
+    };
+
+    mutex_lock(&vq->mutex);
+    vhost_disable_notify(&net->dev, vq);
+
+    headcount = get_rx_bufs(vq, vq->heads, skb->len,
+                &in, NULL, &log, UIO_MAXIOV);
+    printk("headcount=%d\n",headcount);
+
+    //iov_iter_init(&skb_iter, READ, vq->iov, in, skb->len);
+    //r = copy_to_iter((void *)(skb->data), (size_t)(skb->len), &skb_iter);
+    skb_copy_datagram_const_iovec(skb, 0, vq->iov, 0, skb->len);
+    memcpy_toiovecend(vq->iov, (void *)&hdr, 0, 10);
+    printk("skb->len = %d\n",skb->len);
+        /* print test pkt content */
+        printk("0x%p===%d===%d===%d\n",vq->iov->iov_base, iov_length(vq->iov, in), in, vq->iov->iov_len);
+        HexDump(vq->iov->iov_base, 100, (int)(vq->iov->iov_base));
+        HexDump(skb->data, 100, (int)(skb->data));
+    vhost_add_used_and_signal_n(&net->dev, vq, vq->heads, headcount);
+    mutex_unlock(&vq->mutex);
+
+}
+
+int dev_xmit_tpcm_host(struct vhost_net *net, struct net_device * dev, u_char* pkt, int pkt_len,unsigned char *dest)
+{
+struct sk_buff * skb = NULL; 
+struct ethhdr * ethdr = NULL; 
+u_char * pdata = NULL;
+int nret = 1; 
+
+printk("in dev_xmit_tpcm\n");
+//dev = dev_get_by_name(&init_net, eth);
+skb = alloc_skb (pkt_len + 12 + 14 , GFP_ATOMIC);
+if (NULL == skb) goto out;
+printk("alloc_skb success\n");
+skb_reserve(skb, 12+14); 
+skb->dev = dev;
+skb->pkt_type = PACKET_OTHERHOST;
+
+if(pkt == NULL)
+{
+printk("pkt pointer is null\n");  
+ goto out;   
+
+}
+
+ pdata = skb_put(skb, pkt_len); 
+ printk("before memcpy pkt\n");
+ if (NULL != pkt) memcpy(pdata, pkt, pkt_len);
+ printk("after memcpy pkt\n");
+ ethdr = (struct ethhdr *) skb_push(skb, 14); 
+ //unsigned char dest[] = "\x52\x54\x00\xc0\x26\x6c";
+ memcpy(ethdr->h_dest, dest, ETH_ALEN);  
+ //unsigned char src[] = "\x12\x34\x56\xab\xcd\xee";
+ memcpy(ethdr->h_source, src_test, ETH_ALEN); 
+ ethdr->h_proto = __constant_htons(0xBEEF);
+ pdata =  skb_push(skb,1);
+ *pdata = 0x00;
+ pdata =  skb_push(skb,1);
+ *pdata = 0x01;
+ skb_push(skb,10);
+ printk("before add vring\n");
+ handle_tpcm_rx(net, skb);
+ printk("after add vring\n");
+nret = 0;
+out:
+if (0 != nret && NULL != skb) { kfree_skb(skb);}
+//dev_put(dev); 
+
+return nret;
+
+}
+
+int vtcm_command_request(struct vhost_net *net, char *Mstring, unsigned int Msize, \
+        struct net_device *dev,unsigned char* vm_mac)
+
+{
+    unsigned int * cmd; 
+    int ret=0;
+    char* pdata=NULL;
+    unsigned int len=0;
+    struct net_device  *macvtap=NULL; 
+    unsigned char* desc_mac=NULL;
+
+
+    if((!Mstring)||(!dev)||(!vm_mac))
+    {
+          printk("vtcm_command_request params is null\n"); 
+          return ret; 
+    } 
+    else
+    {
+          pdata=Mstring;
+          len=Msize;
+          macvtap=dev;
+          desc_mac=vm_mac;
+    }
+
+    cmd=(unsigned int *)Mstring;    
+    switch(__constant_ntohl(*cmd))
+    {
+            case 0x1000:
+                printk("command 0x1000\n");
+                break;
+            case 0x1001:
+                printk("command 0x1001\n");
+                break;           
+            case 0x1002:
+                printk("command 0x1002\n");
+                break; 
+            case 0x1003:
+                printk("command 0x1003\n");
+                break; 
+            default:
+                printk("command wrong cmd=%#x\n",__constant_ntohl(*cmd));     
+                break;
+    }
+    //ret= vtcm_command_respond(pdata,len,macvtap,desc_mac); 
+    ret=dev_xmit_tpcm_host(net, macvtap, pdata,len,desc_mac);
+    if(ret)
+    {
+         printk("dev_xmit_tpcm_host return wrong ret=%d\n",ret); 
+    } 
+    return ret;
+
+}
+
+/*----------------------------------------------------------------------------------*/
+static void handle_tx(struct vhost_net *net)
+{
+	struct vhost_net_virtqueue *nvq = &net->vqs[VHOST_NET_VQ_TX];
+	struct vhost_virtqueue *vq = &nvq->vq;
+	unsigned out, in, s;
+	int head;
+	struct msghdr msg = {
+		.msg_name = NULL,
+		.msg_namelen = 0,
+		.msg_control = NULL,
+		.msg_controllen = 0,
+		.msg_iov = vq->iov,
+		.msg_flags = MSG_DONTWAIT,
+	};
+	size_t len, total_len = 0;
+	int err;
+	size_t hdr_size;
+	struct socket *sock;
+	struct vhost_net_ubuf_ref *uninitialized_var(ubufs);
+	bool zcopy, zcopy_used;
+/*--------------------------------fgz add--------------------*/ 
+    char* data_base=NULL;
+    unsigned int tx_result=0;
+    unsigned int data_len=0;
+    struct ethhdr * ethdr = NULL;
+    struct macvtap_queue *q=NULL; 
+/*--------------------------------fgz add--------------------*/
+
+	mutex_lock(&vq->mutex);
+	sock = vq->private_data;
+	if (!sock)
+		goto out;
+
+	vhost_disable_notify(&net->dev, vq);
+
+	hdr_size = nvq->vhost_hlen;
+	zcopy = nvq->ubufs;
+
+	for (;;) {
+		/* Release DMAs done buffers first */
+		if (zcopy)
+			vhost_zerocopy_signal_used(net, vq);
+
+		/* If more outstanding DMAs, queue the work.
+		 * Handle upend_idx wrap around
+		 */
+		if (unlikely((nvq->upend_idx + vq->num - VHOST_MAX_PEND)
+			      % UIO_MAXIOV == nvq->done_idx))
+			break;
+
+		head = vhost_get_vq_desc(vq, vq->iov,
+					 ARRAY_SIZE(vq->iov),
+					 &out, &in,
+					 NULL, NULL);
+		/* On error, stop handling until the next kick. */
+		if (unlikely(head < 0))
+			break;
+		/* Nothing new?  Wait for eventfd to tell us they refilled. */
+		if (head == vq->num) {
+			if (unlikely(vhost_enable_notify(&net->dev, vq))) {
+				vhost_disable_notify(&net->dev, vq);
+				continue;
+			}
+			break;
+		}
+		if (in) {
+			vq_err(vq, "Unexpected descriptor format for TX: "
+			       "out %d, int %d\n", out, in);
+			break;
+		}
+        /* print test pkt content */
+        //printk("0x%p===%d===%d===%d\n",vq->iov->iov_base, iov_length(vq->iov, out), out, vq->iov->iov_len);
+        //HexDump(vq->iov->iov_base, 100, (int)(vq->iov->iov_base));
+		
+        
+        
+        /*-------------------------fgz add for encrypt card--------------------------------------------- */
+        
+        ethdr=(struct ethhdr *)((void*)vq->iov->iov_base+VIRTIO_HEAD_LEN);
+        if(ENCRYPT_PROTOCOL==__constant_ntohs(ethdr->h_proto))
+        {
+            
+             q = container_of(sock, struct macvtap_queue, sock); 
+           
+             if(!q) 
+             {
+                  printk("get null macvtap_queue!!!\n");
+             }
+             else
+             {
+                  printk("macvtap_queue is not null!!!\n"); 
+                  printk("macvtap name is =%s!!!\n",q->vlan->dev->name); 
+             } 
+             
+             data_base=(char*)vq->iov->iov_base+VIRTIO_HEAD_LEN+ETH_HLEN;
+             data_len=vq->iov->iov_len-VIRTIO_HEAD_LEN-ETH_HLEN;
+             tx_result=vtcm_command_request(net, data_base,data_len,q->vlan->dev,ethdr->h_source);
+             if(!tx_result)
+             {
+                  printk("encrypt card return bad results=%d\n",tx_result);
+             }
+             
+        }
+       /*-------------------------------------------------------------------------------------------------*/ 
+        /* Skip header. TODO: support TSO. */
+		s = move_iovec_hdr(vq->iov, nvq->hdr, hdr_size, out);
+		msg.msg_iovlen = out;
+		len = iov_length(vq->iov, out);
+		/* Sanity check */
+		if (!len) {
+			vq_err(vq, "Unexpected header len for TX: "
+			       "%zd expected %zd\n",
+			       iov_length(nvq->hdr, s), hdr_size);
+			break;
+		}
+
+		zcopy_used = zcopy && len >= VHOST_GOODCOPY_LEN
+				   && (nvq->upend_idx + 1) % UIO_MAXIOV !=
+				      nvq->done_idx
+				   && vhost_net_tx_select_zcopy(net);
+
+		/* use msg_control to pass vhost zerocopy ubuf info to skb */
+		if (zcopy_used) {
+			struct ubuf_info *ubuf;
+			ubuf = nvq->ubuf_info + nvq->upend_idx;
+
+			vq->heads[nvq->upend_idx].id = head;
+			vq->heads[nvq->upend_idx].len = VHOST_DMA_IN_PROGRESS;
+			ubuf->callback = vhost_zerocopy_callback;
+			ubuf->ctx = nvq->ubufs;
+			ubuf->desc = nvq->upend_idx;
+			msg.msg_control = ubuf;
+			msg.msg_controllen = sizeof(ubuf);
+			ubufs = nvq->ubufs;
+			atomic_inc(&ubufs->refcount);
+			nvq->upend_idx = (nvq->upend_idx + 1) % UIO_MAXIOV;
+		} else {
+			msg.msg_control = NULL;
+			ubufs = NULL;
+		}
+		/* TODO: Check specific error and bomb out unless ENOBUFS? */
+		err = sock->ops->sendmsg(NULL, sock, &msg, len);
+		if (unlikely(err < 0)) {
+			if (zcopy_used) {
+				vhost_net_ubuf_put(ubufs);
+				nvq->upend_idx = ((unsigned)nvq->upend_idx - 1)
+					% UIO_MAXIOV;
+			}
+			vhost_discard_vq_desc(vq, 1);
+			break;
+		}
+		if (err != len)
+			pr_debug("Truncated TX packet: "
+				 " len %d != %zd\n", err, len);
+		if (!zcopy_used)
+			vhost_add_used_and_signal(&net->dev, vq, head, 0);
+		else
+			vhost_zerocopy_signal_used(net, vq);
+		total_len += len;
+		vhost_net_tx_packet(net);
+		if (unlikely(total_len >= VHOST_NET_WEIGHT)) {
+			vhost_poll_queue(&vq->poll);
+			break;
+		}
+	}
+out:
+	mutex_unlock(&vq->mutex);
+}
+
+
+int vtcm_command_respond(char* pkt, unsigned int pkt_len,struct net_device *dev,unsigned char* vm_mac)
+{
+    struct sk_buff * skb = NULL;
+    struct ethhdr * ethdr = NULL;
+    unsigned char * pdata = NULL;
+    unsigned char src[] = "\xf8\x34\x56\xab\xcd\xee"; 
+    char* local_pkt=NULL;
+    unsigned int len=0;
+    unsigned char* desc_mac=NULL;
+    struct net_device *macvtap=NULL;
+
+
+    printk("in vtcm_command_respond\n");
+    if((!dev) || (!pkt) || (!vm_mac))
+    {
+         printk("bad params  \n");
+         return 0;
+    }
+    else
+    {
+         local_pkt=pkt;
+         len=pkt_len;
+         desc_mac=vm_mac; 
+         macvtap=dev; 
+    }
+
+    printk("len=%d\n",len);
+    skb = alloc_skb (len + VIRTIO_HEAD_LEN + ETH_HLEN , GFP_ATOMIC);
+    if (NULL == skb) goto out;
+    printk("alloc_skb success\n");
+
+    skb_reserve(skb, VIRTIO_HEAD_LEN+ETH_HLEN);
+    skb->dev =macvtap; 
+    skb->pkt_type = PACKET_OTHERHOST;
+
+    if(local_pkt == NULL) {
+        printk("pkt pointer is null\n");
+        goto out;
+        }
+
+    pdata = skb_put(skb, len);
+    printk("before memcpy pkt\n");
+    if (NULL != local_pkt) memcpy(pdata, local_pkt,len);
+    printk("after memcpy pkt\n");
+
+    /*
+     *  * Add fake ethernet header
+     *      * need a proto_type for tpcm
+     *          *
+     *              * BEEF
+     *                  *
+     *                      * */
+    ethdr = (struct ethhdr *) skb_push(skb, ETH_HLEN);
+    memcpy(ethdr->h_dest, desc_mac, ETH_ALEN);
+    memcpy(ethdr->h_source, src, ETH_ALEN);
+    ethdr->h_proto = __constant_htons(ENCRYPT_PROTOCOL);
+    if (0 > dev_queue_xmit(skb)) goto out;
+    printk("after xmit\n"); 
+    out:
+    
+    if ( NULL != skb) { kfree_skb(skb);}
+    
+    return 0;
+}
+
+
+
+
+
+
+static int peek_head_len(struct sock *sk)
+{
+	struct sk_buff *head;
+	int len = 0;
+	unsigned long flags;
+
+	spin_lock_irqsave(&sk->sk_receive_queue.lock, flags);
+	head = skb_peek(&sk->sk_receive_queue);
+	if (likely(head)) {
+		len = head->len;
+		if (vlan_tx_tag_present(head))
+			len += VLAN_HLEN;
+	}
+
+	spin_unlock_irqrestore(&sk->sk_receive_queue.lock, flags);
+	return len;
+}
+
 
 /* Expects to be always run from workqueue - which acts as
  * read-size critical section for our kind of RCU. */
@@ -1155,6 +1465,7 @@ static long vhost_net_ioctl(struct file *f, unsigned int ioctl,
 }
 
 #ifdef CONFIG_COMPAT
+
 static long vhost_net_compat_ioctl(struct file *f, unsigned int ioctl,
 				   unsigned long arg)
 {
