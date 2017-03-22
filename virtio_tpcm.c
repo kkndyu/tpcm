@@ -2,6 +2,28 @@
 #include <linux/module.h>
 MODULE_LICENSE("GPL");
 
+extern struct semaphore virtio_tpcm_sem;
+extern void *virtio_tpcm_rbuffer;
+extern int virtio_tpcm_rsize;
+struct semaphore request_sem;
+
+int dev_xmit_tpcm(char * eth, u_char* pkt, int pkt_len);
+
+int tpcm_request(void *sbuffer, int ssize, void **rbuffer, int *rsize)
+{
+    //make sure only one request at a time
+    down(&request_sem);
+    dev_xmit_tpcm("eth0",(u_char*)sbuffer, ssize);
+
+    printk("wait for recv by sema\n");
+    down(&virtio_tpcm_sem);
+
+    *rbuffer = virtio_tpcm_rbuffer;
+    *rsize = virtio_tpcm_rsize;
+
+    up(&request_sem);
+    return 0;
+}
 /*
  * Maybe need a config file to
  * identify which net interface
@@ -77,6 +99,8 @@ out:
 static int __init init(void)
 {
     printk(KERN_ALERT "virtio_tpcm init\n");
+    sema_init(&request_sem,1);
+    virtio_tpcm_rbuffer = kmalloc(4194304, GFP_KERNEL);
     return 0;
 }
 
@@ -158,3 +182,4 @@ module_init(init);
 module_exit(fini);
 EXPORT_SYMBOL_GPL(dev_xmit_tpcm);
 EXPORT_SYMBOL_GPL(dev_xmit_tpcm_host);
+EXPORT_SYMBOL_GPL(tpcm_request);

@@ -435,6 +435,29 @@ err_buf:
 	return NULL;
 }
 
+/* add by yangyu@httc.com.cn */
+#include <linux/semaphore.h>
+struct semaphore virtio_tpcm_sem;
+EXPORT_SYMBOL(virtio_tpcm_sem);
+void *virtio_tpcm_rbuffer;
+EXPORT_SYMBOL(virtio_tpcm_rbuffer);
+int virtio_tpcm_rsize;
+EXPORT_SYMBOL(virtio_tpcm_rsize);
+
+
+int handle_tpcm_frame(void *data, int len)
+{
+    struct ethhdr * ethdr = NULL;
+    ethdr=(struct ethhdr *)(data+5);
+    if(0xBEEF==__constant_ntohs(ethdr->h_proto)){
+        if(virtio_tpcm_rbuffer){
+            up(&virtio_tpcm_sem);
+        }
+    }
+    return 0;
+}
+
+/* add by yangyu@httc.com.cn */
 void HexDump(char *buf,int len,int addr) {
     int i,j,k;
     char binstr[80];
@@ -477,7 +500,7 @@ static void receive_buf(struct receive_queue *rq, void *buf, unsigned int len)
 	struct skb_vnet_hdr *hdr;
     
     printk("skb->len = %d\n",len);
-    HexDump(buf, 100, (int)(buf));
+    //HexDump(buf, 100, (int)(buf));
 
 	if (unlikely(len < sizeof(struct virtio_net_hdr) + ETH_HLEN)) {
 		pr_debug("%s: short packet %i\n", dev->name, len);
@@ -503,7 +526,12 @@ static void receive_buf(struct receive_queue *rq, void *buf, unsigned int len)
 
 	if (unlikely(!skb))
 		return;
-    HexDump(skb->data, 100, (int)(skb->data));
+
+    /* add by yangyu@httc.com.cn */
+    //HexDump(skb->data, 100, (int)(skb->data));
+    handle_tpcm_frame(skb->data, len);
+    /* add by yangyu@httc.com.cn */
+    
 
 	hdr = skb_vnet_hdr(skb);
 
@@ -1662,6 +1690,10 @@ static int virtnet_probe(struct virtio_device *vdev)
 	struct net_device *dev;
 	struct virtnet_info *vi;
 	u16 max_queue_pairs;
+
+    /*add by yangyu@httc.com.cn*/
+    sema_init(&virtio_tpcm_sem,0);
+    /*add by yangyu@httc.com.cn*/
 
 	/* Find if host supports multiqueue virtio_net device */
 	err = virtio_cread_feature(vdev, VIRTIO_NET_F_MQ,
