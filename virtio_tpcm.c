@@ -1,5 +1,6 @@
 #include <linux/netdevice.h>
 #include <linux/module.h>
+#include <linux/semaphore.h>
 MODULE_LICENSE("GPL");
 
 extern struct semaphore virtio_tpcm_sem;
@@ -8,6 +9,38 @@ extern int virtio_tpcm_rsize;
 struct semaphore request_sem;
 
 int dev_xmit_tpcm(char * eth, u_char* pkt, int pkt_len);
+void HexDump(char *buf,int len,int addr) {
+    int i,j,k;
+    char binstr[80];
+
+    for (i=0;i<len;i++) {
+        if (0==(i%16)) {
+            sprintf(binstr,"%08x -",i+addr);
+            sprintf(binstr,"%s %02x",binstr,(unsigned char)buf[i]);
+        } else if (15==(i%16)) {
+            sprintf(binstr,"%s %02x",binstr,(unsigned char)buf[i]);
+            sprintf(binstr,"%s  ",binstr);
+            for (j=i-15;j<=i;j++) {
+                sprintf(binstr,"%s%c",binstr,('!'<buf[j]&&buf[j]<='~')?buf[j]:'.');
+            }
+            printk("%s\n",binstr);
+        } else {
+            sprintf(binstr,"%s %02x",binstr,(unsigned char)buf[i]);
+        }
+    }
+    if (0!=(i%16)) {
+        k=16-(i%16);
+        for (j=0;j<k;j++) {
+            sprintf(binstr,"%s   ",binstr);
+        }
+        sprintf(binstr,"%s  ",binstr);
+        k=16-k;
+        for (j=i-k;j<i;j++) {
+            sprintf(binstr,"%s%c",binstr,('!'<buf[j]&&buf[j]<='~')?buf[j]:'.');
+        }
+        printk("%s\n",binstr);
+    }
+}
 
 int tpcm_request(void *sbuffer, int ssize, void **rbuffer, int *rsize)
 {
@@ -15,11 +48,14 @@ int tpcm_request(void *sbuffer, int ssize, void **rbuffer, int *rsize)
     down(&request_sem);
     dev_xmit_tpcm("eth0",(u_char*)sbuffer, ssize);
 
-    printk("wait for recv by sema\n");
+    printk("wait for recv by sema == %d\n", virtio_tpcm_sem.count);
     down(&virtio_tpcm_sem);
+    printk("sema arrived\n");
 
     *rbuffer = virtio_tpcm_rbuffer;
     *rsize = virtio_tpcm_rsize;
+    HexDump((char *)*rbuffer, *rsize, (int)(*rbuffer));
+
 
     up(&request_sem);
     return 0;

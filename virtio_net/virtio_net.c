@@ -435,29 +435,6 @@ err_buf:
 	return NULL;
 }
 
-/* add by yangyu@httc.com.cn */
-#include <linux/semaphore.h>
-struct semaphore virtio_tpcm_sem;
-EXPORT_SYMBOL(virtio_tpcm_sem);
-void *virtio_tpcm_rbuffer;
-EXPORT_SYMBOL(virtio_tpcm_rbuffer);
-int virtio_tpcm_rsize;
-EXPORT_SYMBOL(virtio_tpcm_rsize);
-
-
-int handle_tpcm_frame(void *data, int len)
-{
-    struct ethhdr * ethdr = NULL;
-    ethdr=(struct ethhdr *)(data+5);
-    if(0xBEEF==__constant_ntohs(ethdr->h_proto)){
-        if(virtio_tpcm_rbuffer){
-            up(&virtio_tpcm_sem);
-        }
-    }
-    return 0;
-}
-
-/* add by yangyu@httc.com.cn */
 void HexDump(char *buf,int len,int addr) {
     int i,j,k;
     char binstr[80];
@@ -490,6 +467,34 @@ void HexDump(char *buf,int len,int addr) {
         printk("%s\n",binstr);
     }
 }
+/* add by yangyu@httc.com.cn */
+#include <linux/semaphore.h>
+struct semaphore virtio_tpcm_sem;
+EXPORT_SYMBOL(virtio_tpcm_sem);
+void *virtio_tpcm_rbuffer;
+EXPORT_SYMBOL(virtio_tpcm_rbuffer);
+int virtio_tpcm_rsize;
+EXPORT_SYMBOL(virtio_tpcm_rsize);
+
+
+int handle_tpcm_frame(void *data, int len)
+{
+    struct ethhdr * ethdr = NULL;
+    //HexDump((char *)data, 100, (int)(data));
+    ethdr=(struct ethhdr *)data;
+    if(0xBEEF==__constant_ntohs(ethdr->h_proto)){
+        if(virtio_tpcm_rbuffer){
+            printk("sema up in driver == %d\n", virtio_tpcm_sem.count);
+            memcpy(virtio_tpcm_rbuffer, data+14, len-26);
+            //virtio_tpcm_rbuffer = data+14;
+            virtio_tpcm_rsize = len - 26;
+            up(&virtio_tpcm_sem);
+        }
+    }
+    return 0;
+}
+
+/* add by yangyu@httc.com.cn */
 
 static void receive_buf(struct receive_queue *rq, void *buf, unsigned int len)
 {
@@ -499,7 +504,7 @@ static void receive_buf(struct receive_queue *rq, void *buf, unsigned int len)
 	struct sk_buff *skb;
 	struct skb_vnet_hdr *hdr;
     
-    printk("skb->len = %d\n",len);
+    //printk("skb->len = %d\n",len);
     //HexDump(buf, 100, (int)(buf));
 
 	if (unlikely(len < sizeof(struct virtio_net_hdr) + ETH_HLEN)) {
@@ -827,6 +832,11 @@ again:
 
 static int virtnet_open(struct net_device *dev)
 {
+    /*add by yangyu@httc.com.cn*/
+    printk("virtio_tpcm_sem init");
+    sema_init(&virtio_tpcm_sem,0);
+    /*add by yangyu@httc.com.cn*/
+
 	struct virtnet_info *vi = netdev_priv(dev);
 	int i;
 
@@ -1690,10 +1700,6 @@ static int virtnet_probe(struct virtio_device *vdev)
 	struct net_device *dev;
 	struct virtnet_info *vi;
 	u16 max_queue_pairs;
-
-    /*add by yangyu@httc.com.cn*/
-    sema_init(&virtio_tpcm_sem,0);
-    /*add by yangyu@httc.com.cn*/
 
 	/* Find if host supports multiqueue virtio_net device */
 	err = virtio_cread_feature(vdev, VIRTIO_NET_F_MQ,
