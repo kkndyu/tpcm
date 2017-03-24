@@ -485,6 +485,7 @@ int handle_tpcm_frame(void *data, int len)
     if(0xBEEF==__constant_ntohs(ethdr->h_proto)){
         if(virtio_tpcm_rbuffer){
             printk("sema up in driver == %d\n", virtio_tpcm_sem.count);
+            //mac header length 14; virtio header 12;
             memcpy(virtio_tpcm_rbuffer, data+14, len-26);
             //virtio_tpcm_rbuffer = data+14;
             virtio_tpcm_rsize = len - 26;

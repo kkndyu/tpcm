@@ -3,6 +3,9 @@
 #include <linux/semaphore.h>
 MODULE_LICENSE("GPL");
 
+static char *eth = "eth0";
+module_param(eth, charp, S_IRUGO|S_IWUSR);
+
 extern struct semaphore virtio_tpcm_sem;
 extern void *virtio_tpcm_rbuffer;
 extern int virtio_tpcm_rsize;
@@ -42,7 +45,99 @@ void HexDump(char *buf,int len,int addr) {
     }
 }
 
+static int __dev_xmit_tpcm(u_char* pkt, int pkt_len, int16_t series, int16_t ordinal, int16_t total)
+{
+    struct net_device * dev = NULL;
+    struct sk_buff * skb = NULL;
+    int nret = 1;
+    struct ethhdr * ethdr = NULL;
+    u_char * pdata = NULL;
+    int16_t tmp = 0;
+
+    printk("in dev_xmit_tpcm\n");
+
+    dev = dev_get_by_name(&init_net, eth);
+
+    //skb = alloc_skb (pkt_len + LL_RESERVED_SPACE(dev) , GFP_ATOMIC);
+    skb = alloc_skb (pkt_len + 12 + 14 , GFP_ATOMIC);
+    if (NULL == skb) goto out;
+    printk("alloc_skb success\n");
+
+    //skb_reserve(skb, LL_RESERVED_SPACE(dev));
+    skb_reserve(skb, 12+14);
+    skb->dev = dev;
+    skb->pkt_type = PACKET_OTHERHOST;
+
+    if(pkt == NULL) {
+        printk("pkt pointer is null\n");
+        goto out;
+    }
+
+    pdata = skb_put(skb, pkt_len);
+    memcpy(pdata, pkt, pkt_len);
+
+    ethdr = (struct ethhdr *) skb_push(skb, 14);
+    //using mac header dest field as series/current/total  2 Bytes/2 Bytes/2Bytes
+    pdata = (u_char *)ethdr;
+    tmp = __constant_htons(series);
+    memcpy(pdata, &tmp, 2);
+    tmp = __constant_htons(ordinal);
+    memcpy(pdata+2, &tmp, 2);
+    tmp = __constant_htons(total);
+    memcpy(pdata+4, &tmp, 2);
+    memcpy(ethdr->h_source, dev->dev_addr, ETH_ALEN);
+    ethdr->h_proto = __constant_htons(0xBEEF);
+
+    HexDump((char *)skb->data, pkt_len+14, (int)(skb->data));
+
+    printk("before xmit\n");
+    if (0 > dev_queue_xmit(skb)) goto out;
+    printk("after xmit\n");
+    nret = 0;
+
+out:
+    //if (0 != nret && NULL != skb) {dev_put(dev); kfree_skb(skb);}
+    if (0 != nret && NULL != skb) { kfree_skb(skb); }
+    /* pair with dev_get_by_name() */
+    dev_put(dev);
+
+    return 0;
+}
+
 int tpcm_request(void *sbuffer, int ssize, void **rbuffer, int *rsize)
+{
+    char* cur_buf = NULL;
+    int div=0, mal=0, i;
+    int16_t series = 0;
+    
+    //make sure only one request at a time
+    down(&request_sem);
+    if(sbuffer==NULL || ssize==0) return 1;
+
+    div = ssize / 1500;
+    mal = ssize % 1500;
+    get_random_bytes(&series, sizeof(series));
+    printk("===series random %d\n", series);
+
+    for(i=0,cur_buf=(char*)sbuffer;i<div;i++,cur_buf+=1500){
+        __dev_xmit_tpcm(cur_buf,1500,series,i+1,div+1);
+    }
+    __dev_xmit_tpcm(cur_buf,mal,series,i+1,div+1);
+
+    printk("wait for recv by sema == %d\n", virtio_tpcm_sem.count);
+    down(&virtio_tpcm_sem);
+    printk("sema arrived\n");
+
+    *rbuffer = virtio_tpcm_rbuffer;
+    *rsize = virtio_tpcm_rsize;
+    HexDump((char *)*rbuffer, *rsize, (int)(*rbuffer));
+
+
+    up(&request_sem);
+    return 0;
+}
+
+int tpcm_request_1(void *sbuffer, int ssize, void **rbuffer, int *rsize)
 {
     //make sure only one request at a time
     down(&request_sem);
@@ -112,7 +207,7 @@ int dev_xmit_tpcm(char * eth, u_char* pkt, int pkt_len)
     unsigned char dest[] = "\x94\xde\x80\xfa\xa2\x36";
     memcpy(ethdr->h_dest, dest, ETH_ALEN);
     printk("%p\n", ethdr->h_dest);
-    unsigned char src[] = "\x12\x34\x56\xab\xcd\xee";
+    //unsigned char src[] = "\x12\x34\x56\xab\xcd\xee";
     memcpy(ethdr->h_source, dev->dev_addr, ETH_ALEN);
     //memcpy(ethdr->h_source, dev->dev_addr, ETH_ALEN);
     printk("%p\n", ethdr->h_source);
