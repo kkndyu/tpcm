@@ -21,7 +21,7 @@ static int __init init(void)
     sbuffer = (u_char*)kmalloc(4096, GFP_KERNEL);
     tmp = sbuffer;
     for(i=0;i<4096;i++){
-        *tmp++ = i % 255;
+        *tmp++ = i % 256;
     }
 
     //dev_xmit_tpcm("eth0", pkt, 20);

@@ -9,6 +9,7 @@ module_param(eth, charp, S_IRUGO|S_IWUSR);
 extern struct semaphore virtio_tpcm_sem;
 extern void *virtio_tpcm_rbuffer;
 extern int virtio_tpcm_rsize;
+extern int16_t virtio_tpcm_series;
 struct semaphore request_sem;
 
 int dev_xmit_tpcm(char * eth, u_char* pkt, int pkt_len);
@@ -104,23 +105,28 @@ out:
     return 0;
 }
 
+#define VIRTIO_TPCM_MTU 1500
+
 int tpcm_request(void *sbuffer, int ssize, void **rbuffer, int *rsize)
 {
     char* cur_buf = NULL;
     int div=0, mal=0, i;
-    int16_t series = 0;
+    int16_t series = -1;
     
     //make sure only one request at a time
     down(&request_sem);
     if(sbuffer==NULL || ssize==0) return 1;
 
-    div = ssize / 1500;
-    mal = ssize % 1500;
-    get_random_bytes(&series, sizeof(series));
+    div = ssize / VIRTIO_TPCM_MTU;
+    mal = ssize % VIRTIO_TPCM_MTU;
+    do{
+        get_random_bytes(&series, sizeof(series));
+    }while(series == -1);
     printk("===series random %d\n", series);
+    virtio_tpcm_series = series;
 
     for(i=0,cur_buf=(char*)sbuffer;i<div;i++,cur_buf+=1500){
-        __dev_xmit_tpcm(cur_buf,1500,series,i+1,div+1);
+        __dev_xmit_tpcm(cur_buf,VIRTIO_TPCM_MTU,series,i+1,div+1);
     }
     __dev_xmit_tpcm(cur_buf,mal,series,i+1,div+1);
 
@@ -131,6 +137,8 @@ int tpcm_request(void *sbuffer, int ssize, void **rbuffer, int *rsize)
     *rbuffer = virtio_tpcm_rbuffer;
     *rsize = virtio_tpcm_rsize;
     HexDump((char *)*rbuffer, *rsize, (int)(*rbuffer));
+
+    virtio_tpcm_rsize = 0;
 
 
     up(&request_sem);
@@ -238,6 +246,7 @@ static int __init init(void)
 static void __exit fini(void)
 {
     printk(KERN_ALERT "virtio_tpcm exit\n");
+    if(virtio_tpcm_rbuffer) kfree(virtio_tpcm_rbuffer);
 }
 
 int dev_xmit_tpcm_host(char * eth, u_char* pkt, int pkt_len)

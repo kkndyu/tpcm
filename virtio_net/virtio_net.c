@@ -471,25 +471,43 @@ void HexDump(char *buf,int len,int addr) {
 #include <linux/semaphore.h>
 struct semaphore virtio_tpcm_sem;
 EXPORT_SYMBOL(virtio_tpcm_sem);
-void *virtio_tpcm_rbuffer;
+void *virtio_tpcm_rbuffer= NULL;
 EXPORT_SYMBOL(virtio_tpcm_rbuffer);
-int virtio_tpcm_rsize;
+int virtio_tpcm_rsize = 0;
 EXPORT_SYMBOL(virtio_tpcm_rsize);
+int16_t virtio_tpcm_series = -1;
+EXPORT_SYMBOL(virtio_tpcm_series);
+int16_t current_total = 0;
 
 
 int handle_tpcm_frame(void *data, int len)
 {
-    struct ethhdr * ethdr = NULL;
+    struct ethhdr * ethdr = (struct ethhdr *)data;
+    int16_t *tmp = (int16_t*)(ethdr->h_source);
+    int16_t series = -1;
+    int16_t ordinal = 0;
+    int16_t total = 0;
     //HexDump((char *)data, 100, (int)(data));
     ethdr=(struct ethhdr *)data;
     if(0xBEEF==__constant_ntohs(ethdr->h_proto)){
-        if(virtio_tpcm_rbuffer){
-            printk("sema up in driver == %d\n", virtio_tpcm_sem.count);
+        HexDump((char *)data, 200, (int)(data));
+        printk("start handle BEEF\n");
+        printk("print tmp %p\n",tmp);
+        series = __constant_ntohs((u16)*tmp);
+        ordinal = __constant_ntohs((u16)*(tmp+1))-1;
+        total = __constant_ntohs((u16)*(tmp+2));
+        printk(" in virtio_net ==== %#04x == %#04x === %#04x == %d\n", series,ordinal,total,current_total);
+
+        if(virtio_tpcm_rbuffer && virtio_tpcm_series != -1 && 
+                series == virtio_tpcm_series){
             //mac header length 14; virtio header 12;
-            memcpy(virtio_tpcm_rbuffer, data+14, len-26);
-            //virtio_tpcm_rbuffer = data+14;
-            virtio_tpcm_rsize = len - 26;
-            up(&virtio_tpcm_sem);
+            memcpy((char*)virtio_tpcm_rbuffer+1500*ordinal, (char*)data+14, len-26);
+            virtio_tpcm_rsize += len - 26;
+            if(++current_total == total){
+                printk("sema up in driver == %d\n", virtio_tpcm_sem.count);
+                current_total = 0;
+                up(&virtio_tpcm_sem);
+            }
         }
     }
     return 0;
@@ -507,6 +525,7 @@ static void receive_buf(struct receive_queue *rq, void *buf, unsigned int len)
     
     //printk("skb->len = %d\n",len);
     //HexDump(buf, 100, (int)(buf));
+    handle_tpcm_frame(buf+7, len);
 
 	if (unlikely(len < sizeof(struct virtio_net_hdr) + ETH_HLEN)) {
 		pr_debug("%s: short packet %i\n", dev->name, len);
@@ -535,7 +554,7 @@ static void receive_buf(struct receive_queue *rq, void *buf, unsigned int len)
 
     /* add by yangyu@httc.com.cn */
     //HexDump(skb->data, 100, (int)(skb->data));
-    handle_tpcm_frame(skb->data, len);
+    //handle_tpcm_frame(skb->data, len);
     /* add by yangyu@httc.com.cn */
     
 

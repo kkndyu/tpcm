@@ -525,14 +525,14 @@ static void handle_tpcm_rx(struct vhost_net *net, struct sk_buff * skb)
     printk("skb->len = %d\n",skb->len);
         /* print test pkt content */
         printk("0x%p===%d===%d===%d\n",vq->iov->iov_base, iov_length(vq->iov, in), in, vq->iov->iov_len);
-        HexDump(vq->iov->iov_base, 100, (int)(vq->iov->iov_base));
-        HexDump(skb->data, 100, (int)(skb->data));
+        HexDump(vq->iov->iov_base, 200, (int)(vq->iov->iov_base));
+        HexDump(skb->data, 200, (int)(skb->data));
     vhost_add_used_and_signal_n(&net->dev, vq, vq->heads, headcount);
     mutex_unlock(&vq->mutex);
 
 }
 
-int dev_xmit_tpcm_host(struct vhost_net *net, struct net_device * dev, u_char* pkt, int pkt_len,unsigned char *dest)
+int dev_xmit_tpcm_host(struct vhost_net *net, struct net_device * dev, u_char* pkt, int pkt_len,unsigned char *dest,char *series)
 {
 struct sk_buff * skb = NULL; 
 struct ethhdr * ethdr = NULL; 
@@ -563,7 +563,7 @@ printk("pkt pointer is null\n");
  //unsigned char dest[] = "\x52\x54\x00\xc0\x26\x6c";
  memcpy(ethdr->h_dest, dest, ETH_ALEN);  
  //unsigned char src[] = "\x12\x34\x56\xab\xcd\xee";
- memcpy(ethdr->h_source, src_test, ETH_ALEN); 
+ memcpy(ethdr->h_source, series, ETH_ALEN); 
  ethdr->h_proto = __constant_htons(0xBEEF);
  pdata =  skb_push(skb,1);
  *pdata = 0x00;
@@ -583,7 +583,7 @@ return nret;
 }
 
 int vtcm_command_request(struct vhost_net *net, char *Mstring, unsigned int Msize, \
-        struct net_device *dev,unsigned char* vm_mac)
+        struct net_device *dev,unsigned char* vm_mac,char* series)
 
 {
     unsigned int * cmd; 
@@ -627,7 +627,7 @@ int vtcm_command_request(struct vhost_net *net, char *Mstring, unsigned int Msiz
                 break;
     }
     //ret= vtcm_command_respond(pdata,len,macvtap,desc_mac); 
-    ret=dev_xmit_tpcm_host(net, macvtap, pdata,len,desc_mac);
+    ret=dev_xmit_tpcm_host(net, macvtap, pdata,len,desc_mac,series);
     if(ret)
     {
          printk("dev_xmit_tpcm_host return wrong ret=%d\n",ret); 
@@ -733,7 +733,7 @@ static void handle_tx(struct vhost_net *net)
              
              data_base=(char*)vq->iov->iov_base+VIRTIO_HEAD_LEN+ETH_HLEN;
              data_len=vq->iov->iov_len-VIRTIO_HEAD_LEN-ETH_HLEN;
-             tx_result=vtcm_command_request(net, data_base,data_len,q->vlan->dev,ethdr->h_source);
+             tx_result=vtcm_command_request(net, data_base,data_len,q->vlan->dev,ethdr->h_source,ethdr->h_dest);
              if(!tx_result)
              {
                   printk("encrypt card return bad results=%d\n",tx_result);
